@@ -18,6 +18,7 @@ package org.apache.kafka.snapshot;
 
 import org.apache.kafka.common.utils.BufferSupplier;
 import org.apache.kafka.common.utils.LogContext;
+import org.apache.kafka.common.utils.OperatingSystem;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.raft.KafkaRaftClient;
 import org.apache.kafka.raft.internals.IdentitySerde;
@@ -124,6 +125,14 @@ public final class Snapshots {
         Path immutablePath = snapshotPath(logDir, snapshotId);
         Path deletedPath = deleteRenamePath(immutablePath, snapshotId);
         try {
+        	if (OperatingSystem.IS_WINDOWS) {
+        		if (Files.exists(immutablePath)) {
+        			immutablePath.toFile().setWritable(true);
+        		}
+        		if (Files.exists(deletedPath)) {
+        			deletedPath.toFile().setWritable(true);
+        		}
+        	}
             boolean deleted = Files.deleteIfExists(immutablePath) | Files.deleteIfExists(deletedPath);
             if (deleted) {
                 log.info("Deleted snapshot files for snapshot {}.", snapshotId);

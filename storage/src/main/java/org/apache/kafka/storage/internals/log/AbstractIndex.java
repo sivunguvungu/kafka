@@ -17,6 +17,7 @@
 package org.apache.kafka.storage.internals.log;
 
 import org.apache.kafka.common.utils.ByteBufferUnmapper;
+import org.apache.kafka.common.utils.OperatingSystem;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.server.util.LockUtils;
 
@@ -233,6 +234,10 @@ public abstract class AbstractIndex implements Closeable {
      */
     public void renameTo(File f) throws IOException {
         try {
+        	if (OperatingSystem.IS_WINDOWS) {
+        		safeForceUnmap();
+        		mmap = null;
+        	}
             Utils.atomicMoveWithFallback(file.toPath(), f.toPath(), false);
         } finally {
             this.file = f;
@@ -244,7 +249,9 @@ public abstract class AbstractIndex implements Closeable {
      */
     public void flush() {
         inLock(() -> {
-            mmap.force();
+        	if (!OperatingSystem.IS_WINDOWS || mmap != null) {
+        		mmap.force();
+        	}
         });
     }
 

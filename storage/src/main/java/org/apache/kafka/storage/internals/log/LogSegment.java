@@ -24,6 +24,7 @@ import org.apache.kafka.common.record.FileRecords.LogOffsetPosition;
 import org.apache.kafka.common.record.MemoryRecords;
 import org.apache.kafka.common.record.RecordBatch;
 import org.apache.kafka.common.utils.BufferSupplier;
+import org.apache.kafka.common.utils.OperatingSystem;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.server.metrics.KafkaMetricsGroup;
@@ -660,6 +661,9 @@ public class LogSegment implements Closeable {
      * IOException from this method should be handled by the caller
      */
     public void changeFileSuffixes(String oldSuffix, String newSuffix) throws IOException {
+    	if (OperatingSystem.IS_WINDOWS && log.channel().isOpen()) {
+    		log.close();
+    	}
         log.renameTo(new File(Utils.replaceSuffix(log.file().getPath(), oldSuffix, newSuffix)));
         lazyOffsetIndex.renameTo(new File(Utils.replaceSuffix(offsetIndexFile().getPath(), oldSuffix, newSuffix)));
         lazyTimeIndex.renameTo(new File(Utils.replaceSuffix(timeIndexFile().getPath(), oldSuffix, newSuffix)));

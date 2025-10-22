@@ -20,6 +20,7 @@ import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.network.TransferableChannel;
 import org.apache.kafka.common.record.FileLogInputStream.FileChannelRecordBatch;
 import org.apache.kafka.common.utils.AbstractIterator;
+import org.apache.kafka.common.utils.OperatingSystem;
 import org.apache.kafka.common.utils.Utils;
 
 import java.io.Closeable;
@@ -47,7 +48,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
 
     // mutable state
     private final AtomicInteger size;
-    private final FileChannel channel;
+    private volatile FileChannel channel;
     private volatile File file;
 
     /**
@@ -135,6 +136,10 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * possible exceptions
      */
     public void readInto(ByteBuffer buffer, int position) throws IOException {
+    	if (OperatingSystem.IS_WINDOWS && !channel.isOpen()) {
+    		channel = FileChannel.open(file.toPath(), StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+    	}
+    	
         Utils.readFully(channel, buffer, position + this.start);
         buffer.flip();
     }
@@ -309,8 +314,13 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * @param targetOffset The offset to search for.
      * @param startingPosition The starting position in the file to begin searching from.
      * @return the batch's base offset, its physical position, and its size (including log overhead)
+     * @throws IOException 
      */
-    public LogOffsetPosition searchForOffsetFromPosition(long targetOffset, int startingPosition) {
+    public LogOffsetPosition searchForOffsetFromPosition(long targetOffset, int startingPosition) throws IOException {
+    	if (OperatingSystem.IS_WINDOWS && !channel.isOpen()) {
+    		channel = FileChannel.open(file.toPath(), StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+    	}
+    	
         FileChannelRecordBatch prevBatch = null;
         // The following logic is intentionally designed to minimize memory usage by avoiding
         // unnecessary calls to lastOffset() for every batch.
@@ -352,8 +362,13 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * @param startingPosition The starting position to search.
      * @param startingOffset The starting offset to search.
      * @return The timestamp and offset of the message found. Null if no message is found.
+     * @throws IOException 
      */
-    public TimestampAndOffset searchForTimestamp(long targetTimestamp, int startingPosition, long startingOffset) {
+    public TimestampAndOffset searchForTimestamp(long targetTimestamp, int startingPosition, long startingOffset) throws IOException {
+    	if (OperatingSystem.IS_WINDOWS && !channel.isOpen()) {
+    		channel = FileChannel.open(file.toPath(), StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+    	}
+    	
         for (RecordBatch batch : batchesFrom(startingPosition)) {
             if (batch.maxTimestamp() >= targetTimestamp) {
                 // We found a message
@@ -372,8 +387,12 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * Return the largest timestamp of the messages after a given position in this file message set.
      * @param startingPosition The starting position.
      * @return The largest timestamp of the messages after the given position.
+     * @throws IOException 
      */
-    public TimestampAndOffset largestTimestampAfter(int startingPosition) {
+    public TimestampAndOffset largestTimestampAfter(int startingPosition) throws IOException {
+    	if (OperatingSystem.IS_WINDOWS && !channel.isOpen()) {
+    		channel = FileChannel.open(file.toPath(), StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+    	}
         long maxTimestamp = RecordBatch.NO_TIMESTAMP;
         long shallowOffsetOfMaxTimestamp = -1L;
         int leaderEpochOfMaxTimestamp = RecordBatch.NO_PARTITION_LEADER_EPOCH;

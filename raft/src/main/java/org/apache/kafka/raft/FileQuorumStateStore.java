@@ -17,6 +17,7 @@
 package org.apache.kafka.raft;
 
 import org.apache.kafka.common.utils.Utils;
+import org.apache.kafka.common.utils.OperatingSystem;
 import org.apache.kafka.raft.generated.QuorumStateData;
 import org.apache.kafka.raft.generated.QuorumStateDataJsonConverter;
 import org.apache.kafka.server.common.KRaftVersion;
@@ -211,6 +212,11 @@ public class FileQuorumStateStore implements QuorumStateStore {
 
     private void deleteFileIfExists(File file) {
         try {
+        	if (OperatingSystem.IS_WINDOWS) {
+        		if (Files.exists(file.toPath())) {
+        			file.setWritable(true);
+        		}
+        	}
             Files.deleteIfExists(file.toPath());
         } catch (IOException e) {
             throw new UncheckedIOException(

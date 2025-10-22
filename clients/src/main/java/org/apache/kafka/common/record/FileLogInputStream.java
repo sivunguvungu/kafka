@@ -22,6 +22,7 @@ import org.apache.kafka.common.record.AbstractLegacyRecordBatch.LegacyFileChanne
 import org.apache.kafka.common.record.DefaultRecordBatch.DefaultFileChannelRecordBatch;
 import org.apache.kafka.common.utils.BufferSupplier;
 import org.apache.kafka.common.utils.CloseableIterator;
+import org.apache.kafka.common.utils.OperatingSystem;
 import org.apache.kafka.common.utils.Utils;
 
 import java.io.IOException;
@@ -40,220 +41,230 @@ import static org.apache.kafka.common.record.Records.SIZE_OFFSET;
  * A log input stream which is backed by a {@link FileChannel}.
  */
 public class FileLogInputStream implements LogInputStream<FileLogInputStream.FileChannelRecordBatch> {
-    private int position;
-    private final int end;
-    private final FileRecords fileRecords;
-    private final ByteBuffer logHeaderBuffer = ByteBuffer.allocate(HEADER_SIZE_UP_TO_MAGIC);
+	private int position;
+	private final int end;
+	private final FileRecords fileRecords;
+	private final ByteBuffer logHeaderBuffer = ByteBuffer.allocate(HEADER_SIZE_UP_TO_MAGIC);
 
-    /**
-     * Create a new log input stream over the FileChannel
-     * @param records Underlying FileRecords instance
-     * @param start Position in the file channel to start from
-     * @param end Position in the file channel not to read past
-     */
-    FileLogInputStream(FileRecords records,
-                       int start,
-                       int end) {
-        this.fileRecords = records;
-        this.position = start;
-        this.end = end;
-    }
+	/**
+	 * Create a new log input stream over the FileChannel
+	 * 
+	 * @param records Underlying FileRecords instance
+	 * @param start   Position in the file channel to start from
+	 * @param end     Position in the file channel not to read past
+	 */
+	FileLogInputStream(FileRecords records, int start, int end) {
+		this.fileRecords = records;
+		this.position = start;
+		this.end = end;
+	}
 
-    @Override
-    public FileChannelRecordBatch nextBatch() throws IOException {
-        FileChannel channel = fileRecords.channel();
-        if (position >= end - HEADER_SIZE_UP_TO_MAGIC)
-            return null;
+	@Override
+	public FileChannelRecordBatch nextBatch() throws IOException {
+		FileChannel channel = fileRecords.channel();
+		if (position >= end - HEADER_SIZE_UP_TO_MAGIC)
+			return null;
 
-        logHeaderBuffer.rewind();
-        Utils.readFullyOrFail(channel, logHeaderBuffer, position, "log header");
+		logHeaderBuffer.rewind();
+		Utils.readFullyOrFail(channel, logHeaderBuffer, position, "log header");
 
-        logHeaderBuffer.rewind();
-        long offset = logHeaderBuffer.getLong(OFFSET_OFFSET);
-        int size = logHeaderBuffer.getInt(SIZE_OFFSET);
+		logHeaderBuffer.rewind();
+		long offset = logHeaderBuffer.getLong(OFFSET_OFFSET);
+		int size = logHeaderBuffer.getInt(SIZE_OFFSET);
 
-        // V0 has the smallest overhead, stricter checking is done later
-        if (size < LegacyRecord.RECORD_OVERHEAD_V0)
-            throw new CorruptRecordException(String.format("Found record size %d smaller than minimum record " +
-                            "overhead (%d) in file %s.", size, LegacyRecord.RECORD_OVERHEAD_V0, fileRecords.file()));
+		// V0 has the smallest overhead, stricter checking is done later
+		if (size < LegacyRecord.RECORD_OVERHEAD_V0)
+			throw new CorruptRecordException(
+					String.format("Found record size %d smaller than minimum record " + "overhead (%d) in file %s.",
+							size, LegacyRecord.RECORD_OVERHEAD_V0, fileRecords.file()));
 
-        if (position > end - LOG_OVERHEAD - size)
-            return null;
+		if (position > end - LOG_OVERHEAD - size)
+			return null;
 
-        byte magic = logHeaderBuffer.get(MAGIC_OFFSET);
-        final FileChannelRecordBatch batch;
+		byte magic = logHeaderBuffer.get(MAGIC_OFFSET);
+		final FileChannelRecordBatch batch;
 
-        if (magic < RecordBatch.MAGIC_VALUE_V2)
-            batch = new LegacyFileChannelRecordBatch(offset, magic, fileRecords, position, size);
-        else
-            batch = new DefaultFileChannelRecordBatch(offset, magic, fileRecords, position, size);
+		if (magic < RecordBatch.MAGIC_VALUE_V2)
+			batch = new LegacyFileChannelRecordBatch(offset, magic, fileRecords, position, size);
+		else
+			batch = new DefaultFileChannelRecordBatch(offset, magic, fileRecords, position, size);
 
-        position += batch.sizeInBytes();
-        return batch;
-    }
+		position += batch.sizeInBytes();
+		return batch;
+	}
 
-    /**
-     * Log entry backed by an underlying FileChannel. This allows iteration over the record batches
-     * without needing to read the record data into memory until it is needed. The downside
-     * is that entries will generally no longer be readable when the underlying channel is closed.
-     */
-    public abstract static class FileChannelRecordBatch extends AbstractRecordBatch {
-        protected final long offset;
-        protected final byte magic;
-        protected final FileRecords fileRecords;
-        protected final int position;
-        protected final int batchSize;
+	/**
+	 * Log entry backed by an underlying FileChannel. This allows iteration over the
+	 * record batches without needing to read the record data into memory until it
+	 * is needed. The downside is that entries will generally no longer be readable
+	 * when the underlying channel is closed.
+	 */
+	public abstract static class FileChannelRecordBatch extends AbstractRecordBatch {
+		protected final long offset;
+		protected final byte magic;
+		protected final FileRecords fileRecords;
+		protected final int position;
+		protected final int batchSize;
 
-        private RecordBatch fullBatch;
-        private RecordBatch batchHeader;
+		private RecordBatch fullBatch;
+		private RecordBatch batchHeader;
 
-        FileChannelRecordBatch(long offset,
-                               byte magic,
-                               FileRecords fileRecords,
-                               int position,
-                               int batchSize) {
-            this.offset = offset;
-            this.magic = magic;
-            this.fileRecords = fileRecords;
-            this.position = position;
-            this.batchSize = batchSize;
-        }
+		FileChannelRecordBatch(long offset, byte magic, FileRecords fileRecords, int position, int batchSize) {
+			this.offset = offset;
+			this.magic = magic;
+			this.fileRecords = fileRecords;
+			this.position = position;
+			this.batchSize = batchSize;
+		}
 
-        @Override
-        public CompressionType compressionType() {
-            return loadBatchHeader().compressionType();
-        }
+		@Override
+		public CompressionType compressionType() {
+			return loadBatchHeader().compressionType();
+		}
 
-        @Override
-        public TimestampType timestampType() {
-            return loadBatchHeader().timestampType();
-        }
+		@Override
+		public TimestampType timestampType() {
+			return loadBatchHeader().timestampType();
+		}
 
-        @Override
-        public long checksum() {
-            return loadBatchHeader().checksum();
-        }
+		@Override
+		public long checksum() {
+			return loadBatchHeader().checksum();
+		}
 
-        @Override
-        public long maxTimestamp() {
-            return loadBatchHeader().maxTimestamp();
-        }
+		@Override
+		public long maxTimestamp() {
+			return loadBatchHeader().maxTimestamp();
+		}
 
-        public int position() {
-            return position;
-        }
+		public int position() {
+			return position;
+		}
 
-        @Override
-        public byte magic() {
-            return magic;
-        }
+		@Override
+		public byte magic() {
+			return magic;
+		}
 
-        @Override
-        public Iterator<Record> iterator() {
-            return loadFullBatch().iterator();
-        }
+		@Override
+		public Iterator<Record> iterator() {
+			return loadFullBatch().iterator();
+		}
 
-        @Override
-        public CloseableIterator<Record> streamingIterator(BufferSupplier bufferSupplier) {
-            return loadFullBatch().streamingIterator(bufferSupplier);
-        }
+		@Override
+		public CloseableIterator<Record> streamingIterator(BufferSupplier bufferSupplier) {
+			return loadFullBatch().streamingIterator(bufferSupplier);
+		}
 
-        @Override
-        public boolean isValid() {
-            return loadFullBatch().isValid();
-        }
+		@Override
+		public boolean isValid() {
+			return loadFullBatch().isValid();
+		}
 
-        @Override
-        public void ensureValid() {
-            loadFullBatch().ensureValid();
-        }
+		@Override
+		public void ensureValid() {
+			loadFullBatch().ensureValid();
+		}
 
-        @Override
-        public int sizeInBytes() {
-            return LOG_OVERHEAD + batchSize;
-        }
+		@Override
+		public int sizeInBytes() {
+			return LOG_OVERHEAD + batchSize;
+		}
 
-        @Override
-        public void writeTo(ByteBuffer buffer) {
-            FileChannel channel = fileRecords.channel();
-            try {
-                int limit = buffer.limit();
-                buffer.limit(buffer.position() + sizeInBytes());
-                Utils.readFully(channel, buffer, position);
-                buffer.limit(limit);
-            } catch (IOException e) {
-                throw new KafkaException("Failed to read record batch at position " + position + " from " + fileRecords, e);
-            }
-        }
+		@Override
+		public void writeTo(ByteBuffer buffer) {
+			FileChannel channel = fileRecords.channel();
+			try {
+				int limit = buffer.limit();
+				buffer.limit(buffer.position() + sizeInBytes());
+				Utils.readFully(channel, buffer, position);
+				buffer.limit(limit);
+			} catch (IOException e) {
+				throw new KafkaException("Failed to read record batch at position " + position + " from " + fileRecords,
+						e);
+			}
+		}
 
-        protected abstract RecordBatch toMemoryRecordBatch(ByteBuffer buffer);
+		protected abstract RecordBatch toMemoryRecordBatch(ByteBuffer buffer);
 
-        protected abstract int headerSize();
+		protected abstract int headerSize();
 
-        protected RecordBatch loadFullBatch() {
-            if (fullBatch == null) {
-                batchHeader = null;
-                fullBatch = loadBatchWithSize(sizeInBytes(), "full record batch");
-            }
-            return fullBatch;
-        }
+		protected RecordBatch loadFullBatch() {
+			if (fullBatch == null) {
+				batchHeader = null;
+				fullBatch = loadBatchWithSize(sizeInBytes(), "full record batch");
+			}
+			return fullBatch;
+		}
 
-        protected RecordBatch loadBatchHeader() {
-            if (fullBatch != null)
-                return fullBatch;
+		protected RecordBatch loadBatchHeader() {
+			if (fullBatch != null)
+				return fullBatch;
 
-            if (batchHeader == null)
-                batchHeader = loadBatchWithSize(headerSize(), "record batch header");
+			if (batchHeader == null)
+				batchHeader = loadBatchWithSize(headerSize(), "record batch header");
 
-            return batchHeader;
-        }
+			return batchHeader;
+		}
 
-        private RecordBatch loadBatchWithSize(int size, String description) {
-            FileChannel channel = fileRecords.channel();
-            try {
-                ByteBuffer buffer = ByteBuffer.allocate(size);
-                Utils.readFullyOrFail(channel, buffer, position, description);
-                buffer.rewind();
-                return toMemoryRecordBatch(buffer);
-            } catch (IOException e) {
-                throw new KafkaException("Failed to load record batch at position " + position + " from " + fileRecords, e);
-            }
-        }
+		private RecordBatch loadBatchWithSize(int size, String description) {
+			FileChannel channel = fileRecords.channel();
+			try {
+				ByteBuffer buffer = ByteBuffer.allocate(size);
+				Utils.readFullyOrFail(channel, buffer, position, description);
+				buffer.rewind();
+				return toMemoryRecordBatch(buffer);
+			} catch (IOException e) {
+				throw new KafkaException("Failed to load record batch at position " + position + " from " + fileRecords,
+						e);
+			}
+		}
 
-        @Override
-        public boolean equals(Object o) {
-            if (this == o)
-                return true;
-            if (o == null || getClass() != o.getClass())
-                return false;
+		@Override
+		public boolean equals(Object o) {
+			if (this == o)
+				return true;
+			if (o == null || getClass() != o.getClass())
+				return false;
 
-            FileChannelRecordBatch that = (FileChannelRecordBatch) o;
+			FileChannelRecordBatch that = (FileChannelRecordBatch) o;
 
-            FileChannel channel = fileRecords == null ? null : fileRecords.channel();
-            FileChannel thatChannel = that.fileRecords == null ? null : that.fileRecords.channel();
+			Object thisObjFile = null;
+			Object thatObjFile = null;
 
-            return offset == that.offset &&
-                    position == that.position &&
-                    batchSize == that.batchSize &&
-                    Objects.equals(channel, thatChannel);
-        }
+			if (OperatingSystem.IS_WINDOWS) {
+				thisObjFile = fileRecords == null ? null : fileRecords.file();
+				thatObjFile = that.fileRecords == null ? null : that.fileRecords.file();
+			} else {
+				thisObjFile = fileRecords == null ? null : fileRecords.channel();
+				thatObjFile = that.fileRecords == null ? null : that.fileRecords.channel();
+			}
+			
+			return offset == that.offset && position == that.position && batchSize == that.batchSize
+					&& Objects.equals(thisObjFile, thatObjFile);
+		}
 
-        @Override
-        public int hashCode() {
-            FileChannel channel = fileRecords == null ? null : fileRecords.channel();
+		@Override
+		public int hashCode() {
+			//FileChannel channel = fileRecords == null ? null : fileRecords.channel();
+			Object thisObjFile = null;
+			
+			if (OperatingSystem.IS_WINDOWS) {
+				thisObjFile = fileRecords == null ? null : fileRecords.file();
+			} else {
+				thisObjFile = fileRecords == null ? null : fileRecords.channel();
+			}
 
-            int result = Long.hashCode(offset);
-            result = 31 * result + (channel != null ? channel.hashCode() : 0);
-            result = 31 * result + position;
-            result = 31 * result + batchSize;
-            return result;
-        }
+			int result = Long.hashCode(offset);
+			result = 31 * result + (thisObjFile != null ? thisObjFile.hashCode() : 0);
+			result = 31 * result + position;
+			result = 31 * result + batchSize;
+			return result;
+		}
 
-        @Override
-        public String toString() {
-            return "FileChannelRecordBatch(magic: " + magic +
-                    ", offset: " + offset +
-                    ", size: " + batchSize + ")";
-        }
-    }
+		@Override
+		public String toString() {
+			return "FileChannelRecordBatch(magic: " + magic + ", offset: " + offset + ", size: " + batchSize + ")";
+		}
+	}
 }
